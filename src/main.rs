@@ -62,6 +62,7 @@ fn update(
             .arg(xpath)
             .args(u[1..].iter())
             .args(cmd.iter())
+            .current_dir(&path)
             .spawn()?
             .wait()?;
     }
