@@ -55,6 +55,16 @@ fn update(
         )?;
     }
     let path = format!("{root_path}/{xpath}");
+    if let Some(u) = member.updater.as_ref() {
+        std::process::Command::new("sh")
+            .arg(format!("{path}/{}", &u[0]))
+            .arg(root_path)
+            .arg(xpath)
+            .args(u[1..].iter())
+            .args(cmd.iter())
+            .spawn()?
+            .wait()?;
+    }
     if let Some(cargo) = member.cargo.as_ref() {
         let mut val: toml::Table = std::fs::read_to_string(format!("{path}/Cargo.toml"))?
             .parse()
@@ -84,6 +94,10 @@ fn update(
         match &*cmd[0] {
             "build" | "publish" => match val.get("zshy") {
                 Some(_) => {
+                    std::fs::write(
+                        format!("{path}/package.json"),
+                        serde_json::to_vec_pretty(&val)?,
+                    )?;
                     std::process::Command::new("npx")
                         .arg("zshy")
                         .current_dir(&path)
@@ -141,6 +155,8 @@ pub struct Member {
     pub cargo: Option<Cargo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub npm: Option<NPM>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updater: Option<Vec<String>>,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
