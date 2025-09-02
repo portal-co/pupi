@@ -1,6 +1,6 @@
 [package]
 name = "portal-solutions-pupi"
-version = "0.0.0"
+version = "0.0.1"
 edition = "2024"
 license = "MPL-2.0"
 description = "Blazingly fast meta-build tool for our open-source libraries"
