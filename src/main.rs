@@ -179,10 +179,13 @@ fn update(
     depmap: &DepMap,
     cmd: &[String],
 ) -> std::io::Result<()> {
-    if visited.read().unwrap().contains(xpath) {
-        return Ok(());
-    }
-    visited.write().unwrap().insert(xpath.to_owned());
+    {
+        let mut w = visited.write().unwrap();
+        if w.contains(xpath) {
+            return Ok(());
+        }
+        w.insert(xpath.to_owned());
+    };
     let mut error = OnceCell::new();
     std::thread::scope(|s| {
         for dep in member.deps.iter() {
