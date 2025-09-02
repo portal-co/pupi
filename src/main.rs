@@ -14,7 +14,20 @@ fn out(c: &mut Command) -> std::io::Result<()> {
     let o = c.output()?;
     stdout().write_all(&o.stdout)?;
     stderr().write_all(&o.stderr)?;
-
+    if !o.status.success() {
+        eprintln!(
+            "[FAIL] {} ({})@{}",
+            c.get_program().display(),
+            c.get_args()
+                .map(|a| format!("[{}]", a.display()))
+                .collect::<Vec<_>>()
+                .join(" "),
+            c.get_current_dir()
+                .map(|d| format!("{}", d.display()))
+                .unwrap_or_else(|| format!("[[current directory]]"))
+        );
+        std::process::exit(o.status.code().unwrap());
+    }
     return Ok(());
 }
 fn main() -> std::io::Result<()> {
@@ -348,6 +361,8 @@ pub struct Member {
     pub deps: BTreeSet<String>,
     pub version: String,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cargo: Option<Cargo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
