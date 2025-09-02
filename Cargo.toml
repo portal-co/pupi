@@ -1,7 +1,9 @@
 [package]
-name = "pupi"
-version = "0.1.0"
+name = "portal-solutions-pupi"
+version = "0.0.0"
 edition = "2024"
+license = "MPL-2.0"
+description = "Blazingly fast meta-build tool for our open-source libraries"
 
 [dependencies]
 once_cell = "1.21.3"
