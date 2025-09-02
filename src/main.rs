@@ -97,6 +97,7 @@ fn main() -> std::io::Result<()> {
             let mut val: serde_json::Value =
                 serde_json::from_reader(File::open(format!("{root_path}/package.json"))?)?;
             if let Some(o) = val.as_object_mut() {
+                let w = o.get("workspaces").and_then(|a| a.as_array());
                 o.insert(
                     "workspaces".to_owned(),
                     serde_json::Value::Array(
@@ -106,6 +107,14 @@ fn main() -> std::io::Result<()> {
                                 None => None,
                                 Some(_) => Some(a.clone()),
                             })
+                            .chain(
+                                w.iter()
+                                    .flat_map(|a| a.iter())
+                                    .filter_map(|a| a.as_str())
+                                    .map(|b| b.to_owned()),
+                            )
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
                             .map(|a| serde_json::Value::String(a))
                             .collect(),
                     ),
@@ -255,11 +264,12 @@ fn update(
                     "description".to_owned(),
                     toml::Value::String(member.description.clone()),
                 );
+                p.insert("publish".to_owned(), toml::Value::Boolean(!member.private));
             }
         }
 
         match &*cmd[0] {
-            "publish" => {
+            "publish" if !member.private=> {
                 out(std::process::Command::new("cargo")
                     .arg("publish")
                     .current_dir(&path))?;
@@ -331,7 +341,7 @@ fn update(
             _ => {}
         }
         match &*cmd[0] {
-            "publish" => {
+            "publish" if !member.private => {
                 // build!();
                 out(std::process::Command::new("npm")
                     .arg("publish")
@@ -361,6 +371,8 @@ pub struct Member {
     pub deps: BTreeSet<String>,
     pub version: String,
     pub description: String,
+    #[serde(default)]
+    pub private: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
