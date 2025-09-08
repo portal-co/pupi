@@ -127,77 +127,81 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 fn add_workspaces(root: &Root, root_path: &str) -> std::io::Result<()> {
-    let mut val: serde_json::Value =
-        serde_json::from_reader(File::open(format!("{root_path}/package.json"))?)?;
-    if let Some(o) = val.as_object_mut() {
-        let w = o.get("workspaces").and_then(|a| a.as_array());
-        o.insert(
-            "workspaces".to_owned(),
-            serde_json::Value::Array(
-                root.members
-                    .iter()
-                    .filter_map(|(a, b)| match b.npm.as_ref() {
-                        None => None,
-                        Some(_) => Some(a.clone()),
-                    })
-                    .chain(
-                        w.iter()
-                            .flat_map(|a| a.iter())
-                            .filter_map(|a| a.as_str())
-                            .map(|b| b.to_owned()),
-                    )
-                    .map(|mut a| {
-                        while let Some(b) = a.strip_prefix("./") {
-                            a = b.to_owned();
-                        }
-                        return a;
-                    })
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .map(|a| serde_json::Value::String(a))
-                    .collect(),
-            ),
-        );
+    if std::fs::exists(format!("{root_path}/package.json"))? {
+        let mut val: serde_json::Value =
+            serde_json::from_reader(File::open(format!("{root_path}/package.json"))?)?;
+        if let Some(o) = val.as_object_mut() {
+            let w = o.get("workspaces").and_then(|a| a.as_array());
+            o.insert(
+                "workspaces".to_owned(),
+                serde_json::Value::Array(
+                    root.members
+                        .iter()
+                        .filter_map(|(a, b)| match b.npm.as_ref() {
+                            None => None,
+                            Some(_) => Some(a.clone()),
+                        })
+                        .chain(
+                            w.iter()
+                                .flat_map(|a| a.iter())
+                                .filter_map(|a| a.as_str())
+                                .map(|b| b.to_owned()),
+                        )
+                        .map(|mut a| {
+                            while let Some(b) = a.strip_prefix("./") {
+                                a = b.to_owned();
+                            }
+                            return a;
+                        })
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .map(|a| serde_json::Value::String(a))
+                        .collect(),
+                ),
+            );
+        }
+        std::fs::write(
+            format!("{root_path}/package.json"),
+            serde_json::to_vec_pretty(&val)?,
+        )?;
     }
-    std::fs::write(
-        format!("{root_path}/package.json"),
-        serde_json::to_vec_pretty(&val)?,
-    )?;
-    let mut val: toml::Table = std::fs::read_to_string(format!("{root_path}/Cargo.toml"))?
-        .parse()
-        .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
-    if let Some(m) = val
-        .get_mut("workspace")
-        .and_then(|a| a.as_table_mut())
-        .and_then(|a| a.get_mut("members"))
-        .and_then(|a| a.as_array_mut())
-    {
-        *m = root
-            .members
-            .iter()
-            .filter_map(|(a, b)| match b.cargo.as_ref() {
-                None => None,
-                Some(_) => Some(a.clone()),
-            })
-            .chain(
-                m.into_iter()
-                    .filter_map(|a| a.as_str().map(|a| a.to_owned())),
-            )
-            .map(|mut a| {
-                while let Some(b) = a.strip_prefix("./") {
-                    a = b.to_owned();
-                }
-                return a;
-            })
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .map(|a| toml::Value::String(a))
-            .collect();
+    if std::fs::exists(format!("{root_path}/Cargo.toml"))? {
+        let mut val: toml::Table = std::fs::read_to_string(format!("{root_path}/Cargo.toml"))?
+            .parse()
+            .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
+        if let Some(m) = val
+            .get_mut("workspace")
+            .and_then(|a| a.as_table_mut())
+            .and_then(|a| a.get_mut("members"))
+            .and_then(|a| a.as_array_mut())
+        {
+            *m = root
+                .members
+                .iter()
+                .filter_map(|(a, b)| match b.cargo.as_ref() {
+                    None => None,
+                    Some(_) => Some(a.clone()),
+                })
+                .chain(
+                    m.into_iter()
+                        .filter_map(|a| a.as_str().map(|a| a.to_owned())),
+                )
+                .map(|mut a| {
+                    while let Some(b) = a.strip_prefix("./") {
+                        a = b.to_owned();
+                    }
+                    return a;
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .map(|a| toml::Value::String(a))
+                .collect();
+        }
+        std::fs::write(
+            format!("{root_path}/Cargo.toml"),
+            toml::to_string_pretty(&val).map_err(|e| std::io::Error::new(ErrorKind::Other, e))?,
+        )?;
     }
-    std::fs::write(
-        format!("{root_path}/Cargo.toml"),
-        toml::to_string_pretty(&val).map_err(|e| std::io::Error::new(ErrorKind::Other, e))?,
-    )?;
     Ok(())
 }
 #[derive(Default)]
@@ -246,12 +250,17 @@ fn update(
     depmap: &DepMap,
     cmd: &[String],
 ) -> std::io::Result<()> {
-    {
-        let mut w = visited.write().unwrap();
-        if w.contains(xpath) {
-            return Ok(());
+    if visited.read().unwrap().contains(xpath) {
+        return Ok(());
+    }
+    match visited.write().unwrap() {
+        mut w => {
+            // let mut w = ;
+            if w.contains(xpath) {
+                return Ok(());
+            }
+            w.insert(xpath.to_owned());
         }
-        w.insert(xpath.to_owned());
     };
     let mut error = OnceCell::new();
     std::thread::scope(|s| {
