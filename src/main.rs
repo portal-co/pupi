@@ -94,36 +94,7 @@ fn main() -> std::io::Result<()> {
             let visited = RwLock::new(BTreeSet::new());
             let mut error = OnceCell::new();
             let d = DepMap::default();
-            let mut val: serde_json::Value =
-                serde_json::from_reader(File::open(format!("{root_path}/package.json"))?)?;
-            if let Some(o) = val.as_object_mut() {
-                let w = o.get("workspaces").and_then(|a| a.as_array());
-                o.insert(
-                    "workspaces".to_owned(),
-                    serde_json::Value::Array(
-                        root.members
-                            .iter()
-                            .filter_map(|(a, b)| match b.npm.as_ref() {
-                                None => None,
-                                Some(_) => Some(a.clone()),
-                            })
-                            .chain(
-                                w.iter()
-                                    .flat_map(|a| a.iter())
-                                    .filter_map(|a| a.as_str())
-                                    .map(|b| b.to_owned()),
-                            )
-                            .collect::<BTreeSet<_>>()
-                            .into_iter()
-                            .map(|a| serde_json::Value::String(a))
-                            .collect(),
-                    ),
-                );
-            }
-            std::fs::write(
-                format!("{root_path}/package.json"),
-                serde_json::to_vec_pretty(&val)?,
-            )?;
+            add_workspaces(&root, &root_path)?;
             std::thread::scope(|s| {
                 for (path, member) in root.members.iter() {
                     // let path = format!("{root_path}/{path}");
@@ -153,6 +124,80 @@ fn main() -> std::io::Result<()> {
             }
         }
     }
+    Ok(())
+}
+fn add_workspaces(root: &Root, root_path: &str) -> std::io::Result<()> {
+    let mut val: serde_json::Value =
+        serde_json::from_reader(File::open(format!("{root_path}/package.json"))?)?;
+    if let Some(o) = val.as_object_mut() {
+        let w = o.get("workspaces").and_then(|a| a.as_array());
+        o.insert(
+            "workspaces".to_owned(),
+            serde_json::Value::Array(
+                root.members
+                    .iter()
+                    .filter_map(|(a, b)| match b.npm.as_ref() {
+                        None => None,
+                        Some(_) => Some(a.clone()),
+                    })
+                    .chain(
+                        w.iter()
+                            .flat_map(|a| a.iter())
+                            .filter_map(|a| a.as_str())
+                            .map(|b| b.to_owned()),
+                    )
+                    .map(|mut a| {
+                        while let Some(b) = a.strip_prefix("./") {
+                            a = b.to_owned();
+                        }
+                        return a;
+                    })
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .map(|a| serde_json::Value::String(a))
+                    .collect(),
+            ),
+        );
+    }
+    std::fs::write(
+        format!("{root_path}/package.json"),
+        serde_json::to_vec_pretty(&val)?,
+    )?;
+    let mut val: toml::Table = std::fs::read_to_string(format!("{root_path}/Cargo.toml"))?
+        .parse()
+        .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
+    if let Some(m) = val
+        .get_mut("workspace")
+        .and_then(|a| a.as_table_mut())
+        .and_then(|a| a.get_mut("members"))
+        .and_then(|a| a.as_array_mut())
+    {
+        *m = root
+            .members
+            .iter()
+            .filter_map(|(a, b)| match b.cargo.as_ref() {
+                None => None,
+                Some(_) => Some(a.clone()),
+            })
+            .chain(
+                m.into_iter()
+                    .filter_map(|a| a.as_str().map(|a| a.to_owned())),
+            )
+            .map(|mut a| {
+                while let Some(b) = a.strip_prefix("./") {
+                    a = b.to_owned();
+                }
+                return a;
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|a| toml::Value::String(a))
+            .collect();
+    }
+    std::fs::write(
+        format!("{root_path}/Cargo.toml"),
+        toml::to_string_pretty(&val).map_err(|e| std::io::Error::new(ErrorKind::Other, e))?,
+    )?;
     Ok(())
 }
 #[derive(Default)]
@@ -269,7 +314,7 @@ fn update(
         }
 
         match &*cmd[0] {
-            "publish" if !member.private=> {
+            "publish" if !member.private => {
                 out(std::process::Command::new("cargo")
                     .arg("publish")
                     .current_dir(&path))?;
@@ -360,12 +405,16 @@ fn update(
     Ok(())
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
 pub struct Root {
+    #[serde(rename = "//", default, skip_serializing_if = "Option::is_none")]
+    pub core: Option<RootCore>,
     #[serde(flatten)]
     pub members: BTreeMap<String, Member>,
 }
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+pub struct RootCore {}
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
 #[non_exhaustive]
 pub struct Member {
     pub deps: BTreeSet<String>,
@@ -382,9 +431,9 @@ pub struct Member {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updater: Option<Vec<String>>,
 }
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
 #[non_exhaustive]
 pub struct Cargo {}
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
 #[non_exhaustive]
 pub struct NPM {}
