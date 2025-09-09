@@ -1,11 +1,12 @@
 use once_cell::sync::OnceCell;
 use std::{
     // cell::OnceCell,
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{ErrorKind, Write, stderr, stdout},
     process::Command,
-    sync::RwLock,
+    sync::{Mutex, RwLock},
 };
 
 use schemars::JsonSchema;
@@ -86,6 +87,34 @@ fn main() -> std::io::Result<()> {
                 .spawn()?
                 .wait()?;
         }
+        // "subtree" => {
+        //     let root_path = args.next().unwrap();
+        //     let args = args.collect::<Vec<_>>();
+        //     let root: Root =
+        //         serde_json::from_reader(File::open(format!("{root_path}/pupi.json"))?)?;
+        //     // let visited = RwLock::new(BTreeSet::new());
+        //     let mut error = OnceCell::new();
+        //     let roots: Mutex<BTreeMap<String, Root>> = Mutex::new(BTreeMap::new());
+        //     std::thread::scope(|s| {
+        //         for (path, member) in root.members.iter() {
+
+        //             // });
+        //         }
+        //     });
+        //     if let Some(e) = error.take() {
+        //         return Err(e);
+        //     }
+        //     let mut root = root;
+        //     for (k, r) in roots.into_inner().unwrap() {
+        //         for (p, m) in r.members {
+        //             root.members.insert(format!("{k}/{p}").replace("./", ""), m);
+        //         }
+        //     }
+        //     std::fs::write(
+        //         format!("{root_path}/pupi.json"),
+        //         serde_json::to_vec_pretty(&root)?,
+        //     )?;
+        // }
         _ => {
             let root_path = args.next().unwrap();
             let args = args.collect::<Vec<_>>();
@@ -208,8 +237,38 @@ fn add_workspaces(root: &Root, root_path: &str) -> std::io::Result<()> {
 struct DepMap {
     npm: OnceCell<BTreeMap<String, String>>,
     rnpm: OnceCell<BTreeMap<String, String>>,
+    subroots: OnceCell<BTreeMap<String, (OnceCell<Root>, RwLock<BTreeSet<String>>, DepMap)>>,
 }
 impl DepMap {
+    fn subroot(
+        &self,
+        root: &Root,
+        root_path: &str,
+        name: &str,
+    ) -> std::io::Result<Option<(&Root, &RwLock<BTreeSet<String>>, String, &DepMap)>> {
+        let m = self.subroots.get_or_try_init(|| {
+            Ok::<_, std::io::Error>(
+                root.members
+                    .iter()
+                    .flat_map(|(a, b)| {
+                        b.subtree.iter().flat_map(move |a2| {
+                            a2.paths.iter().map(move |(p, _)| format!("{a}/{p}"))
+                        })
+                    })
+                    .map(|a| (a, Default::default()))
+                    .collect(),
+            )
+        })?;
+        let Some((m, r, n)) = m.get(name) else {
+            return Ok(None);
+        };
+        let m = m.get_or_try_init(|| {
+            let root: Root =
+                serde_json::from_reader(File::open(format!("{root_path}/{name}/pupi.json"))?)?;
+            Ok::<_, std::io::Error>(root)
+        })?;
+        return Ok(Some((m, r, format!("{root_path}/{name}"), n)));
+    }
     fn npm(&self, root: &Root, root_path: &str) -> std::io::Result<&BTreeMap<String, String>> {
         return self.npm.get_or_try_init(|| {
             let mut m: BTreeMap<String, String> = BTreeMap::new();
@@ -241,6 +300,51 @@ impl DepMap {
         });
     }
 }
+fn update_dep(
+    xpath: &str,
+    dep: &Dep,
+    root_path: &str,
+    member: &Member,
+    root: &Root,
+    visited: &RwLock<BTreeSet<String>>,
+    depmap: &DepMap,
+    cmd: &[String],
+) -> std::io::Result<()> {
+    let mut root_path = Cow::Borrowed(root_path);
+    let mut root = root;
+    let mut visited = visited;
+    let mut depmap = depmap;
+    let mut dep = dep;
+    let do_update = matches!(&*cmd[0], "autogen" | "build" | "publish" | "update");
+    loop {
+        if let Some(s) = dep.subtree.as_ref() {
+            if do_update {
+                return update(xpath, &root_path, member, root, visited, depmap, cmd);
+            }
+            update_dep(
+                &s.pkg_name,
+                &s.pkg,
+                &root_path,
+                member,
+                root,
+                visited,
+                depmap,
+                cmd,
+            )?;
+            if let Some((a, b, c, d)) =
+                depmap.subroot(root, &root_path, &format!("{}/{}", &s.pkg_name, &s.subtree))?
+            {
+                root_path = Cow::Owned(c);
+                root = a;
+                visited = b;
+                depmap = d;
+                dep = &s.nest;
+                continue;
+            }
+        }
+         return update(xpath, &root_path, member, root, visited, depmap, cmd);
+    }
+}
 fn update(
     xpath: &str,
     root_path: &str,
@@ -264,11 +368,51 @@ fn update(
     };
     let mut error = OnceCell::new();
     std::thread::scope(|s| {
-        for dep in member.deps.iter() {
+        if let Some(subtree) = member.subtree.as_ref() {
+            // s.spawn(||{}
+            // std::thread::scope(|s| {
+            for (p, v) in subtree.paths.iter().map(|(p, v)| (p.clone(), v.clone())) {
+                let error = &error;
+                let path = &xpath;
+                let root_path = &root_path;
+                // let roots = &roots;
+                // let xpath = &xpath;
+                s.spawn(move || {
+                    match (move || {
+                        out(std::process::Command::new("git")
+                            .arg("subtree")
+                            .arg("pull")
+                            .arg("-P")
+                            .arg(format!("{root_path}/{path}/{p}"))
+                            .arg(v))?;
+                        // if std::fs::exists(format!("{root_path}/{path}/{p}/pupi.json"))?
+                        // {
+                        //     let root2: Root = serde_json::from_reader(File::open(
+                        //         format!("{root_path}/{path}/{p}/pupi.json"),
+                        //     )?)?;
+                        //     roots.lock().unwrap().insert(format!("{path}/{p}"), root2);
+                        // }
+                        Ok::<_, std::io::Error>(())
+                    })() {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error.set(e);
+                        }
+                    }
+                });
+            }
+        }
+    });
+    if let Some(e) = error.take() {
+        return Err(e);
+    }
+    std::thread::scope(|s| {
+        for (dep, x) in member.deps.iter() {
             let error = &error;
             s.spawn(move || {
-                match update(
+                match update_dep(
                     &dep,
+                    &x,
                     root_path,
                     root.members.get(dep).unwrap(),
                     root,
@@ -304,6 +448,7 @@ fn update(
             _ => {}
         }
     }
+
     std::thread::scope(|s| {
         if let Some(cargo) = member.cargo.as_ref() {
             s.spawn(|| {
@@ -325,7 +470,14 @@ fn update(
                             p.insert("publish".to_owned(), toml::Value::Boolean(!member.private));
                         }
                     }
-
+                    match &*cmd[0] {
+                        "build" | "publish" => {
+                            out(std::process::Command::new("cargo")
+                                .arg("check")
+                                .current_dir(&path))?;
+                        }
+                        _ => {}
+                    }
                     match &*cmd[0] {
                         "publish" if !member.private => {
                             out(std::process::Command::new("cargo")
@@ -458,7 +610,7 @@ pub struct RootCore {}
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
 #[non_exhaustive]
 pub struct Member {
-    pub deps: BTreeSet<String>,
+    pub deps: BTreeMap<String, Dep>,
     pub version: String,
     pub description: String,
     #[serde(default)]
@@ -470,6 +622,8 @@ pub struct Member {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub npm: Option<NPM>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtree: Option<Subtree>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updater: Option<Vec<String>>,
 }
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
@@ -478,3 +632,20 @@ pub struct Cargo {}
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
 #[non_exhaustive]
 pub struct NPM {}
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+#[non_exhaustive]
+pub struct Subtree {
+    pub paths: BTreeMap<String, String>,
+}
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+#[non_exhaustive]
+pub struct Dep {
+    pub subtree: Option<SubtreeID>,
+}
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+pub struct SubtreeID {
+    pub pkg_name: String,
+    pub pkg: Box<Dep>,
+    pub subtree: String,
+    pub nest: Box<Dep>,
+}
