@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Root",
+  "type": "object",
+  "properties": {
+    "//": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RootCore"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/Member"
+  },
+  "$defs": {
+    "Cargo": {
+      "type": "object"
+    },
+    "Dep": {
+      "type": "object",
+      "properties": {
+        "subtree": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubtreeID"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Member": {
+      "type": "object",
+      "properties": {
+        "cargo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cargo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deps": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Dep"
+          }
+        },
+        "description": {
+          "type": "string"
+        },
+        "npm": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NPM"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": {
+          "type": "boolean",
+          "default": false
+        },
+        "subtree": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Subtree"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updater": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "deps",
+        "version",
+        "description"
+      ]
+    },
+    "NPM": {
+      "type": "object"
+    },
+    "RootCore": {
+      "type": "object"
+    },
+    "Subtree": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "paths"
+      ]
+    },
+    "SubtreeID": {
+      "type": "object",
+      "properties": {
+        "nest": {
+          "$ref": "#/$defs/Dep"
+        },
+        "pkg": {
+          "$ref": "#/$defs/Dep"
+        },
+        "pkg_name": {
+          "type": "string"
+        },
+        "subtree": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pkg_name",
+        "pkg",
+        "subtree",
+        "nest"
+      ]
+    }
+  }
+}
