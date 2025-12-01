@@ -15,7 +15,16 @@ use serde::{Deserialize, Serialize};
 
 /// Load a configuration from either JSON or YAML file.
 /// Checks for JSON first, then YAML. This does NOT apply to package.json.
+///
+/// # Panics
+/// Panics if `config_name` is "package" as package.json files should not use YAML.
 pub fn load_config<T: for<'de> Deserialize<'de>>(base_path: &str, config_name: &str) -> std::io::Result<T> {
+    // Enforce that package.json is not affected by YAML support
+    assert!(
+        config_name != "package",
+        "package.json files are not supported by load_config. Use serde_json directly."
+    );
+
     let json_path = format!("{base_path}/{config_name}.json");
     let yaml_path = format!("{base_path}/{config_name}.yaml");
     let yml_path = format!("{base_path}/{config_name}.yml");
