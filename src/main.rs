@@ -172,18 +172,18 @@ fn main() -> std::io::Result<()> {
                 for (path, member) in root.members.iter() {
                     // let path = format!("{root_path}/{path}");
                     s.spawn(|| {
-                        match update(
-                            path,
-                            &root_path,
+                        match update(UpdateContext {
+                            xpath: path,
+                            root_path: &root_path,
                             member,
-                            &root,
-                            &visited,
-                            &d,
-                            &[cmd.clone()]
+                            root: &root,
+                            visited: &visited,
+                            depmap: &d,
+                            cmd: &[cmd.clone()]
                                 .into_iter()
                                 .chain(args.clone())
                                 .collect::<Vec<_>>(),
-                        ) {
+                        }) {
                             Ok(_) => {}
                             Err(e) => {
                                 let _ = error.set(e);
@@ -277,6 +277,27 @@ fn add_workspaces(root: &Root, root_path: &str) -> std::io::Result<()> {
     }
     Ok(())
 }
+struct UpdateContext<'a> {
+    xpath: &'a str,
+    root_path: &'a str,
+    member: &'a Member,
+    root: &'a Root,
+    visited: &'a RwLock<BTreeSet<String>>,
+    depmap: &'a DepMap,
+    cmd: &'a [String],
+}
+
+struct BuildContext<'a> {
+    path: &'a str,
+    root_path: &'a str,
+    xpath: &'a str,
+    member: &'a Member,
+    root: &'a Root,
+    depmap: &'a DepMap,
+    cmd: &'a [String],
+    update: bool,
+}
+
 #[derive(Default)]
 struct DepMap {
     npm: OnceCell<BTreeMap<String, String>>,
@@ -344,36 +365,37 @@ impl DepMap {
         });
     }
 }
-fn update_dep(
-    xpath: &str,
-    dep: &Dep,
-    root_path: &str,
-    member: &Member,
-    root: &Root,
-    visited: &RwLock<BTreeSet<String>>,
-    depmap: &DepMap,
-    cmd: &[String],
-) -> std::io::Result<()> {
-    let mut root_path = Cow::Borrowed(root_path);
-    let mut root = root;
-    let mut visited = visited;
-    let mut depmap = depmap;
+fn update_dep(ctx: UpdateContext, dep: &Dep) -> std::io::Result<()> {
+    let mut root_path = Cow::Borrowed(ctx.root_path);
+    let mut root = ctx.root;
+    let mut visited = ctx.visited;
+    let mut depmap = ctx.depmap;
     let mut dep = dep;
-    let do_update = matches!(&*cmd[0], "autogen" | "build" | "publish" | "update");
+    let do_update = matches!(&*ctx.cmd[0], "autogen" | "build" | "publish" | "update");
     loop {
         if let Some(s) = dep.subrepo.as_ref() {
             if do_update {
-                return update(xpath, &root_path, member, root, visited, depmap, cmd);
+                return update(UpdateContext {
+                    xpath: ctx.xpath,
+                    root_path: &root_path,
+                    member: ctx.member,
+                    root,
+                    visited,
+                    depmap,
+                    cmd: ctx.cmd,
+                });
             }
             update_dep(
-                &s.pkg_name,
+                UpdateContext {
+                    xpath: &s.pkg_name,
+                    root_path: &root_path,
+                    member: ctx.member,
+                    root,
+                    visited,
+                    depmap,
+                    cmd: ctx.cmd,
+                },
                 &s.pkg,
-                &root_path,
-                member,
-                root,
-                visited,
-                depmap,
-                cmd,
             )?;
             if let Some((a, b, c, d)) =
                 depmap.subroot(root, &root_path, &format!("{}/{}", &s.pkg_name, &s.subrepo))?
@@ -386,37 +408,46 @@ fn update_dep(
                 continue;
             }
         }
-        return update(xpath, &root_path, member, root, visited, depmap, cmd);
+        return update(UpdateContext {
+            xpath: ctx.xpath,
+            root_path: &root_path,
+            member: ctx.member,
+            root,
+            visited,
+            depmap,
+            cmd: ctx.cmd,
+        });
     }
 }
-fn update(
-    xpath: &str,
-    root_path: &str,
-    member: &Member,
-    root: &Root,
-    visited: &RwLock<BTreeSet<String>>,
-    depmap: &DepMap,
-    cmd: &[String],
-) -> std::io::Result<()> {
-    if visited.read().unwrap().contains(xpath) {
+fn update(ctx: UpdateContext) -> std::io::Result<()> {
+    if ctx.visited.read().unwrap().contains(ctx.xpath) {
         return Ok(());
     }
-    match visited.write().unwrap() {
+    match ctx.visited.write().unwrap() {
         mut w => {
             // let mut w = ;
-            if w.contains(xpath) {
+            if w.contains(ctx.xpath) {
                 return Ok(());
             }
-            w.insert(xpath.to_owned());
+            w.insert(ctx.xpath.to_owned());
         }
     };
-    let path = format!("{root_path}/{xpath}");
-    let update = matches!(&*cmd[0], "autogen" | "build" | "publish" | "update");
+    let path = format!("{}/{}", ctx.root_path, ctx.xpath);
+    let update = matches!(&*ctx.cmd[0], "autogen" | "build" | "publish" | "update");
     let mut error = OnceCell::new();
     std::thread::scope(|s| {
-        if let Some(subtree) = member.subtree.as_ref() {
+        if let Some(subtree) = ctx.member.subtree.as_ref() {
             s.spawn(|| {
-                match subtree.process(&path, root_path, xpath, member, root, depmap, cmd, update) {
+                match subtree.process(BuildContext {
+                    path: &path,
+                    root_path: ctx.root_path,
+                    xpath: ctx.xpath,
+                    member: ctx.member,
+                    root: ctx.root,
+                    depmap: ctx.depmap,
+                    cmd: ctx.cmd,
+                    update,
+                }) {
                     Ok(_) => {}
                     Err(e) => {
                         let _ = error.set(e);
@@ -424,9 +455,18 @@ fn update(
                 }
             });
         }
-        if let Some(submodule) = member.submodule.as_ref() {
+        if let Some(submodule) = ctx.member.submodule.as_ref() {
             s.spawn(|| {
-                match submodule.process(&path, root_path, xpath, member, root, depmap, cmd, update) {
+                match submodule.process(BuildContext {
+                    path: &path,
+                    root_path: ctx.root_path,
+                    xpath: ctx.xpath,
+                    member: ctx.member,
+                    root: ctx.root,
+                    depmap: ctx.depmap,
+                    cmd: ctx.cmd,
+                    update,
+                }) {
                     Ok(_) => {}
                     Err(e) => {
                         let _ = error.set(e);
@@ -439,18 +479,20 @@ fn update(
         return Err(e);
     }
     std::thread::scope(|s| {
-        for (dep, x) in member.deps.iter() {
+        for (dep, x) in ctx.member.deps.iter() {
             let error = &error;
             s.spawn(move || {
                 match update_dep(
-                    &dep,
+                    UpdateContext {
+                        xpath: &dep,
+                        root_path: ctx.root_path,
+                        member: ctx.root.members.get(dep).unwrap(),
+                        root: ctx.root,
+                        visited: ctx.visited,
+                        depmap: ctx.depmap,
+                        cmd: ctx.cmd,
+                    },
                     &x,
-                    root_path,
-                    root.members.get(dep).unwrap(),
-                    root,
-                    visited,
-                    depmap,
-                    cmd,
                 ) {
                     Ok(_) => {}
                     Err(e) => {
@@ -463,26 +505,35 @@ fn update(
     if let Some(e) = error.take() {
         return Err(e);
     }
-    eprintln!("[Build] Building {xpath}");
+    eprintln!("[Build] Building {}", ctx.xpath);
 
-    if let Some(u) = member.updater.as_ref() {
-        match &*cmd[0] {
+    if let Some(u) = ctx.member.updater.as_ref() {
+        match &*ctx.cmd[0] {
             "autogen" | "build" | "publish" => {
                 out(std::process::Command::new("sh")
                     .arg(format!("{path}/{}", &u[0]))
-                    .arg(root_path)
-                    .arg(xpath)
+                    .arg(ctx.root_path)
+                    .arg(ctx.xpath)
                     .args(u[1..].iter())
-                    .args(cmd.iter())
+                    .args(ctx.cmd.iter())
                     .current_dir(&path))?;
             }
             _ => {}
         }
     }
     std::thread::scope(|s| {
-        if let Some(cargo) = member.cargo.as_ref() {
+        if let Some(cargo) = ctx.member.cargo.as_ref() {
             s.spawn(|| {
-                match cargo.process(&path, root_path, xpath, member, root, depmap, cmd, update) {
+                match cargo.process(BuildContext {
+                    path: &path,
+                    root_path: ctx.root_path,
+                    xpath: ctx.xpath,
+                    member: ctx.member,
+                    root: ctx.root,
+                    depmap: ctx.depmap,
+                    cmd: ctx.cmd,
+                    update,
+                }) {
                     Ok(_) => {}
                     Err(e) => {
                         let _ = error.set(e);
@@ -490,9 +541,18 @@ fn update(
                 }
             });
         }
-        if let Some(npm) = member.npm.as_ref() {
+        if let Some(npm) = ctx.member.npm.as_ref() {
             s.spawn(|| {
-                match npm.process(&path, root_path, xpath, member, root, depmap, cmd, update) {
+                match npm.process(BuildContext {
+                    path: &path,
+                    root_path: ctx.root_path,
+                    xpath: ctx.xpath,
+                    member: ctx.member,
+                    root: ctx.root,
+                    depmap: ctx.depmap,
+                    cmd: ctx.cmd,
+                    update,
+                }) {
                     Ok(_) => {}
                     Err(e) => {
                         let _ = error.set(e);
@@ -554,66 +614,46 @@ pub struct Submodule {
 }
 
 trait BuildSystem {
-    fn process(
-        &self,
-        path: &str,
-        root_path: &str,
-        xpath: &str,
-        member: &Member,
-        root: &Root,
-        depmap: &DepMap,
-        cmd: &[String],
-        update: bool,
-    ) -> std::io::Result<()>;
+    fn process(&self, ctx: BuildContext) -> std::io::Result<()>;
 }
 
 impl BuildSystem for Cargo {
-    fn process(
-        &self,
-        path: &str,
-        _root_path: &str,
-        _xpath: &str,
-        member: &Member,
-        _root: &Root,
-        _depmap: &DepMap,
-        cmd: &[String],
-        update: bool,
-    ) -> std::io::Result<()> {
-        let mut val: toml::Table = std::fs::read_to_string(format!("{path}/Cargo.toml"))?
+    fn process(&self, ctx: BuildContext) -> std::io::Result<()> {
+        let mut val: toml::Table = std::fs::read_to_string(format!("{}/Cargo.toml", ctx.path))?
             .parse()
             .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
-        if update {
+        if ctx.update {
             if let Some(p) = val.get_mut("package").and_then(|a| a.as_table_mut()) {
                 p.insert(
                     "version".to_owned(),
-                    toml::Value::String(member.version.clone()),
+                    toml::Value::String(ctx.member.version.clone()),
                 );
                 p.insert(
                     "description".to_owned(),
-                    toml::Value::String(member.description.clone()),
+                    toml::Value::String(ctx.member.description.clone()),
                 );
-                p.insert("publish".to_owned(), toml::Value::Boolean(!member.private));
+                p.insert("publish".to_owned(), toml::Value::Boolean(!ctx.member.private));
             }
         }
-        match &*cmd[0] {
+        match &*ctx.cmd[0] {
             "build" | "publish" => {
                 out(std::process::Command::new("cargo")
                     .arg("check")
-                    .current_dir(&path))?;
+                    .current_dir(&ctx.path))?;
             }
             _ => {}
         }
-        match &*cmd[0] {
-            "publish" if !member.private => {
+        match &*ctx.cmd[0] {
+            "publish" if !ctx.member.private => {
                 out(std::process::Command::new("cargo")
                     .arg("publish")
-                    .current_dir(&path))?;
+                    .current_dir(&ctx.path))?;
             }
             "build" => {}
             _ => {}
         }
         std::fs::write(
-            format!("{path}/Cargo.toml"),
+            format!("{}/Cargo.toml", ctx.path),
             toml::to_string_pretty(&val).map_err(|e| std::io::Error::new(ErrorKind::Other, e))?,
         )?;
         Ok(())
@@ -621,23 +661,13 @@ impl BuildSystem for Cargo {
 }
 
 impl BuildSystem for NPM {
-    fn process(
-        &self,
-        path: &str,
-        root_path: &str,
-        xpath: &str,
-        member: &Member,
-        root: &Root,
-        depmap: &DepMap,
-        cmd: &[String],
-        update: bool,
-    ) -> std::io::Result<()> {
+    fn process(&self, ctx: BuildContext) -> std::io::Result<()> {
         let mut val: serde_json::Value =
-            serde_json::from_reader(File::open(format!("{path}/package.json"))?)?;
-        if update {
+            serde_json::from_reader(File::open(format!("{}/package.json", ctx.path))?)?;
+        if ctx.update {
             for (a, b) in [
-                ("version", &member.version),
-                ("description", &member.description),
+                ("version", &ctx.member.version),
+                ("description", &ctx.member.description),
             ] {
                 if let Some(o) = val.as_object_mut() {
                     o.insert(a.to_owned(), serde_json::Value::String(b.clone()));
@@ -649,56 +679,56 @@ impl BuildSystem for NPM {
                 .and_then(|d| d.as_object_mut())
             {
                 for (k, v) in deps.iter_mut() {
-                    if let Some(dep_name) = depmap
-                        .rnpm(root, root_path)?
+                    if let Some(dep_name) = ctx.depmap
+                        .rnpm(ctx.root, ctx.root_path)?
                         .get(k)
-                        .and_then(|a| root.members.get(a))
+                        .and_then(|a| ctx.root.members.get(a))
                     {
                         *v = serde_json::Value::String(format!("^{}", &dep_name.version));
                     }
                 }
             }
         }
-        match &*cmd[0] {
+        match &*ctx.cmd[0] {
             "build" | "publish" => match val.get("zshy") {
                 Some(_) => {
                     std::fs::write(
-                        format!("{path}/package.json"),
+                        format!("{}/package.json", ctx.path),
                         serde_json::to_vec_pretty(&val)?,
                     )?;
                     out(std::process::Command::new("npx")
                         .arg("zshy")
                         .arg("-p")
-                        .arg(format!("{root_path}/tsconfig.json"))
-                        .current_dir(&path))?;
-                    val = serde_json::from_reader(File::open(format!("{path}/package.json"))?)?;
+                        .arg(format!("{}/tsconfig.json", ctx.root_path))
+                        .current_dir(&ctx.path))?;
+                    val = serde_json::from_reader(File::open(format!("{}/package.json", ctx.path))?)?;
                 }
                 None => match val.get("source") {
                     Some(_) => {
                         out(std::process::Command::new("npx")
                             .arg("parcel")
                             .arg("build")
-                            .arg(format!("./{xpath}"))
-                            .current_dir(&root_path))?;
+                            .arg(format!("./{}", ctx.xpath))
+                            .current_dir(&ctx.root_path))?;
                     }
                     None => {}
                 },
             },
             _ => {}
         }
-        match &*cmd[0] {
-            "publish" if !member.private => {
+        match &*ctx.cmd[0] {
+            "publish" if !ctx.member.private => {
                 out(std::process::Command::new("npm")
                     .arg("publish")
                     .arg("--access")
                     .arg("public")
-                    .current_dir(&path))?;
+                    .current_dir(&ctx.path))?;
             }
             "build" => {}
             _ => {}
         }
         std::fs::write(
-            format!("{path}/package.json"),
+            format!("{}/package.json", ctx.path),
             serde_json::to_vec_pretty(&val)?,
         )?;
         Ok(())
@@ -706,21 +736,13 @@ impl BuildSystem for NPM {
 }
 
 impl BuildSystem for Subtree {
-    fn process(
-        &self,
-        _path: &str,
-        root_path: &str,
-        xpath: &str,
-        _member: &Member,
-        _root: &Root,
-        _depmap: &DepMap,
-        _cmd: &[String],
-        _update: bool,
-    ) -> std::io::Result<()> {
+    fn process(&self, ctx: BuildContext) -> std::io::Result<()> {
         let mut error = OnceCell::new();
         std::thread::scope(|s| {
             for (p, v) in self.paths.iter().map(|(p, v)| (p.clone(), v.clone())) {
                 let error = &error;
+                let root_path = ctx.root_path;
+                let xpath = ctx.xpath;
                 s.spawn(move || {
                     match (move || {
                         out(std::process::Command::new("git")
@@ -747,21 +769,13 @@ impl BuildSystem for Subtree {
 }
 
 impl BuildSystem for Submodule {
-    fn process(
-        &self,
-        _path: &str,
-        root_path: &str,
-        xpath: &str,
-        _member: &Member,
-        _root: &Root,
-        _depmap: &DepMap,
-        _cmd: &[String],
-        _update: bool,
-    ) -> std::io::Result<()> {
+    fn process(&self, ctx: BuildContext) -> std::io::Result<()> {
         let mut error = OnceCell::new();
         std::thread::scope(|s| {
             for (p, v) in self.paths.iter().map(|(p, v)| (p.clone(), v.clone())) {
                 let error = &error;
+                let root_path = ctx.root_path;
+                let xpath = ctx.xpath;
                 s.spawn(move || {
                     match (move || {
                         let submodule_path = format!("{root_path}/{xpath}/{p}");
