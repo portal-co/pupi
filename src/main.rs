@@ -1,4 +1,6 @@
 use once_cell::sync::OnceCell;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::{
     // cell::OnceCell,
     borrow::Cow,
@@ -9,15 +11,16 @@ use std::{
     process::Command,
     sync::{Mutex, RwLock},
 };
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 /// Load a configuration from either JSON or YAML file.
 /// Checks for JSON first, then YAML. This does NOT apply to package.json.
 ///
 /// # Panics
 /// Panics if `config_name` is "package" as package.json files should not use YAML.
-pub fn load_config<T: for<'de> Deserialize<'de>>(base_path: &str, config_name: &str) -> std::io::Result<T> {
+pub fn load_config<T: for<'de> Deserialize<'de>>(
+    base_path: &str,
+    config_name: &str,
+) -> std::io::Result<T> {
     // Enforce that package.json is not affected by YAML support
     assert!(
         config_name != "package",
@@ -40,7 +43,9 @@ pub fn load_config<T: for<'de> Deserialize<'de>>(base_path: &str, config_name: &
     } else {
         Err(std::io::Error::new(
             ErrorKind::NotFound,
-            format!("Configuration file not found: {config_name}.json, {config_name}.yaml, or {config_name}.yml in {base_path}"),
+            format!(
+                "Configuration file not found: {config_name}.json, {config_name}.yaml, or {config_name}.yml in {base_path}"
+            ),
         ))
     }
 }
@@ -181,7 +186,7 @@ fn main() -> std::io::Result<()> {
                         ) {
                             Ok(_) => {}
                             Err(e) => {
-                                error.set(e);
+                                let _ = error.set(e);
                             }
                         }
                     });
@@ -381,7 +386,7 @@ fn update_dep(
                 continue;
             }
         }
-         return update(xpath, &root_path, member, root, visited, depmap, cmd);
+        return update(xpath, &root_path, member, root, visited, depmap, cmd);
     }
 }
 fn update(
@@ -405,41 +410,19 @@ fn update(
             w.insert(xpath.to_owned());
         }
     };
+    let path = format!("{root_path}/{xpath}");
+    let update = matches!(&*cmd[0], "autogen" | "build" | "publish" | "update");
     let mut error = OnceCell::new();
     std::thread::scope(|s| {
         if let Some(subtree) = member.subtree.as_ref() {
-            // s.spawn(||{}
-            // std::thread::scope(|s| {
-            for (p, v) in subtree.paths.iter().map(|(p, v)| (p.clone(), v.clone())) {
-                let error = &error;
-                let path = &xpath;
-                let root_path = &root_path;
-                // let roots = &roots;
-                // let xpath = &xpath;
-                s.spawn(move || {
-                    match (move || {
-                        out(std::process::Command::new("git")
-                            .arg("subtree")
-                            .arg("pull")
-                            .arg("-P")
-                            .arg(format!("{root_path}/{path}/{p}"))
-                            .arg(v))?;
-                        // if std::fs::exists(format!("{root_path}/{path}/{p}/pupi.json"))?
-                        // {
-                        //     let root2: Root = serde_json::from_reader(File::open(
-                        //         format!("{root_path}/{path}/{p}/pupi.json"),
-                        //     )?)?;
-                        //     roots.lock().unwrap().insert(format!("{path}/{p}"), root2);
-                        // }
-                        Ok::<_, std::io::Error>(())
-                    })() {
-                        Ok(_) => {}
-                        Err(e) => {
-                            error.set(e);
-                        }
+            s.spawn(|| {
+                match subtree.process(&path, root_path, xpath, member, root, depmap, cmd, update) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        let _ = error.set(e);
                     }
-                });
-            }
+                }
+            });
         }
     });
     if let Some(e) = error.take() {
@@ -461,7 +444,7 @@ fn update(
                 ) {
                     Ok(_) => {}
                     Err(e) => {
-                        error.set(e);
+                        let _ = error.set(e);
                     }
                 }
             });
@@ -471,8 +454,7 @@ fn update(
         return Err(e);
     }
     eprintln!("[Build] Building {xpath}");
-    let path = format!("{root_path}/{xpath}");
-    let update = matches!(&*cmd[0], "autogen" | "build" | "publish" | "update");
+
     if let Some(u) = member.updater.as_ref() {
         match &*cmd[0] {
             "autogen" | "build" | "publish" => {
@@ -490,138 +472,20 @@ fn update(
     std::thread::scope(|s| {
         if let Some(cargo) = member.cargo.as_ref() {
             s.spawn(|| {
-                match (|| {
-                    let mut val: toml::Table =
-                        std::fs::read_to_string(format!("{path}/Cargo.toml"))?
-                            .parse()
-                            .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
-                    if update {
-                        if let Some(p) = val.get_mut("package").and_then(|a| a.as_table_mut()) {
-                            p.insert(
-                                "version".to_owned(),
-                                toml::Value::String(member.version.clone()),
-                            );
-                            p.insert(
-                                "description".to_owned(),
-                                toml::Value::String(member.description.clone()),
-                            );
-                            p.insert("publish".to_owned(), toml::Value::Boolean(!member.private));
-                        }
-                    }
-                    match &*cmd[0] {
-                        "build" | "publish" => {
-                            out(std::process::Command::new("cargo")
-                                .arg("check")
-                                .current_dir(&path))?;
-                        }
-                        _ => {}
-                    }
-                    match &*cmd[0] {
-                        "publish" if !member.private => {
-                            out(std::process::Command::new("cargo")
-                                .arg("publish")
-                                .current_dir(&path))?;
-                        }
-                        "build" => {}
-                        _ => {}
-                    }
-                    std::fs::write(
-                        format!("{path}/Cargo.toml"),
-                        toml::to_string_pretty(&val)
-                            .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?,
-                    )?;
-                    Ok::<_, std::io::Error>(())
-                })() {
+                match cargo.process(&path, root_path, xpath, member, root, depmap, cmd, update) {
                     Ok(_) => {}
                     Err(e) => {
-                        error.set(e);
+                        let _ = error.set(e);
                     }
                 }
             });
         }
         if let Some(npm) = member.npm.as_ref() {
             s.spawn(|| {
-                match (|| {
-                    let mut val: serde_json::Value =
-                        serde_json::from_reader(File::open(format!("{path}/package.json"))?)?;
-                    if update {
-                        for (a, b) in [
-                            ("version", &member.version),
-                            ("description", &member.description),
-                        ] {
-                            if let Some(o) = val.as_object_mut() {
-                                o.insert(a.to_owned(), serde_json::Value::String(b.clone()));
-                            }
-                        }
-                        if let Some(deps) = val
-                            .as_object_mut()
-                            .and_then(|o| o.get_mut("dependencies"))
-                            .and_then(|d| d.as_object_mut())
-                        {
-                            for (k, v) in deps.iter_mut() {
-                                if let Some(dep_name) = depmap
-                                    .rnpm(root, root_path)?
-                                    .get(k)
-                                    .and_then(|a| root.members.get(a))
-                                {
-                                    *v = serde_json::Value::String(format!(
-                                        "^{}",
-                                        &dep_name.version
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    match &*cmd[0] {
-                        "build" | "publish" => match val.get("zshy") {
-                            Some(_) => {
-                                std::fs::write(
-                                    format!("{path}/package.json"),
-                                    serde_json::to_vec_pretty(&val)?,
-                                )?;
-                                out(std::process::Command::new("npx")
-                                    .arg("zshy")
-                                    .arg("-p")
-                                    .arg(format!("{root_path}/tsconfig.json"))
-                                    .current_dir(&path))?;
-                                val = serde_json::from_reader(File::open(format!(
-                                    "{path}/package.json"
-                                ))?)?;
-                            }
-                            None => match val.get("source") {
-                                Some(_) => {
-                                    out(std::process::Command::new("npx")
-                                        .arg("parcel")
-                                        .arg("build")
-                                        .arg(format!("./{xpath}"))
-                                        .current_dir(&root_path))?;
-                                }
-                                None => {}
-                            },
-                        },
-                        _ => {}
-                    }
-                    match &*cmd[0] {
-                        "publish" if !member.private => {
-                            // build!();
-                            out(std::process::Command::new("npm")
-                                .arg("publish")
-                                .arg("--access")
-                                .arg("public")
-                                .current_dir(&path))?;
-                        }
-                        "build" => {}
-                        _ => {}
-                    }
-                    std::fs::write(
-                        format!("{path}/package.json"),
-                        serde_json::to_vec_pretty(&val)?,
-                    )?;
-                    Ok::<_, std::io::Error>(())
-                })() {
+                match npm.process(&path, root_path, xpath, member, root, depmap, cmd, update) {
                     Ok(_) => {}
                     Err(e) => {
-                        error.set(e);
+                        let _ = error.set(e);
                     }
                 }
             });
@@ -670,6 +534,199 @@ pub struct NPM {}
 #[non_exhaustive]
 pub struct Subtree {
     pub paths: BTreeMap<String, String>,
+}
+
+trait BuildSystem {
+    fn process(
+        &self,
+        path: &str,
+        root_path: &str,
+        xpath: &str,
+        member: &Member,
+        root: &Root,
+        depmap: &DepMap,
+        cmd: &[String],
+        update: bool,
+    ) -> std::io::Result<()>;
+}
+
+impl BuildSystem for Cargo {
+    fn process(
+        &self,
+        path: &str,
+        _root_path: &str,
+        _xpath: &str,
+        member: &Member,
+        _root: &Root,
+        _depmap: &DepMap,
+        cmd: &[String],
+        update: bool,
+    ) -> std::io::Result<()> {
+        let mut val: toml::Table = std::fs::read_to_string(format!("{path}/Cargo.toml"))?
+            .parse()
+            .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
+        if update {
+            if let Some(p) = val.get_mut("package").and_then(|a| a.as_table_mut()) {
+                p.insert(
+                    "version".to_owned(),
+                    toml::Value::String(member.version.clone()),
+                );
+                p.insert(
+                    "description".to_owned(),
+                    toml::Value::String(member.description.clone()),
+                );
+                p.insert("publish".to_owned(), toml::Value::Boolean(!member.private));
+            }
+        }
+        match &*cmd[0] {
+            "build" | "publish" => {
+                out(std::process::Command::new("cargo")
+                    .arg("check")
+                    .current_dir(&path))?;
+            }
+            _ => {}
+        }
+        match &*cmd[0] {
+            "publish" if !member.private => {
+                out(std::process::Command::new("cargo")
+                    .arg("publish")
+                    .current_dir(&path))?;
+            }
+            "build" => {}
+            _ => {}
+        }
+        std::fs::write(
+            format!("{path}/Cargo.toml"),
+            toml::to_string_pretty(&val).map_err(|e| std::io::Error::new(ErrorKind::Other, e))?,
+        )?;
+        Ok(())
+    }
+}
+
+impl BuildSystem for NPM {
+    fn process(
+        &self,
+        path: &str,
+        root_path: &str,
+        xpath: &str,
+        member: &Member,
+        root: &Root,
+        depmap: &DepMap,
+        cmd: &[String],
+        update: bool,
+    ) -> std::io::Result<()> {
+        let mut val: serde_json::Value =
+            serde_json::from_reader(File::open(format!("{path}/package.json"))?)?;
+        if update {
+            for (a, b) in [
+                ("version", &member.version),
+                ("description", &member.description),
+            ] {
+                if let Some(o) = val.as_object_mut() {
+                    o.insert(a.to_owned(), serde_json::Value::String(b.clone()));
+                }
+            }
+            if let Some(deps) = val
+                .as_object_mut()
+                .and_then(|o| o.get_mut("dependencies"))
+                .and_then(|d| d.as_object_mut())
+            {
+                for (k, v) in deps.iter_mut() {
+                    if let Some(dep_name) = depmap
+                        .rnpm(root, root_path)?
+                        .get(k)
+                        .and_then(|a| root.members.get(a))
+                    {
+                        *v = serde_json::Value::String(format!("^{}", &dep_name.version));
+                    }
+                }
+            }
+        }
+        match &*cmd[0] {
+            "build" | "publish" => match val.get("zshy") {
+                Some(_) => {
+                    std::fs::write(
+                        format!("{path}/package.json"),
+                        serde_json::to_vec_pretty(&val)?,
+                    )?;
+                    out(std::process::Command::new("npx")
+                        .arg("zshy")
+                        .arg("-p")
+                        .arg(format!("{root_path}/tsconfig.json"))
+                        .current_dir(&path))?;
+                    val = serde_json::from_reader(File::open(format!("{path}/package.json"))?)?;
+                }
+                None => match val.get("source") {
+                    Some(_) => {
+                        out(std::process::Command::new("npx")
+                            .arg("parcel")
+                            .arg("build")
+                            .arg(format!("./{xpath}"))
+                            .current_dir(&root_path))?;
+                    }
+                    None => {}
+                },
+            },
+            _ => {}
+        }
+        match &*cmd[0] {
+            "publish" if !member.private => {
+                out(std::process::Command::new("npm")
+                    .arg("publish")
+                    .arg("--access")
+                    .arg("public")
+                    .current_dir(&path))?;
+            }
+            "build" => {}
+            _ => {}
+        }
+        std::fs::write(
+            format!("{path}/package.json"),
+            serde_json::to_vec_pretty(&val)?,
+        )?;
+        Ok(())
+    }
+}
+
+impl BuildSystem for Subtree {
+    fn process(
+        &self,
+        _path: &str,
+        root_path: &str,
+        xpath: &str,
+        _member: &Member,
+        _root: &Root,
+        _depmap: &DepMap,
+        _cmd: &[String],
+        _update: bool,
+    ) -> std::io::Result<()> {
+        let mut error = OnceCell::new();
+        std::thread::scope(|s| {
+            for (p, v) in self.paths.iter().map(|(p, v)| (p.clone(), v.clone())) {
+                let error = &error;
+                s.spawn(move || {
+                    match (move || {
+                        out(std::process::Command::new("git")
+                            .arg("subtree")
+                            .arg("pull")
+                            .arg("-P")
+                            .arg(format!("{root_path}/{xpath}/{p}"))
+                            .arg(v))?;
+                        Ok::<_, std::io::Error>(())
+                    })() {
+                        Ok(_) => {}
+                        Err(e) => {
+                            let _ = error.set(e);
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(e) = error.take() {
+            return Err(e);
+        }
+        Ok(())
+    }
 }
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
 #[non_exhaustive]
