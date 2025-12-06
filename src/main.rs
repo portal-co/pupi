@@ -361,7 +361,7 @@ fn update_dep(
     let mut dep = dep;
     let do_update = matches!(&*cmd[0], "autogen" | "build" | "publish" | "update");
     loop {
-        if let Some(s) = dep.subtree.as_ref() {
+        if let Some(s) = dep.subrepo.as_ref() {
             if do_update {
                 return update(xpath, &root_path, member, root, visited, depmap, cmd);
             }
@@ -376,7 +376,7 @@ fn update_dep(
                 cmd,
             )?;
             if let Some((a, b, c, d)) =
-                depmap.subroot(root, &root_path, &format!("{}/{}", &s.pkg_name, &s.subtree))?
+                depmap.subroot(root, &root_path, &format!("{}/{}", &s.pkg_name, &s.subrepo))?
             {
                 root_path = Cow::Owned(c);
                 root = a;
@@ -804,12 +804,12 @@ impl BuildSystem for Submodule {
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
 #[non_exhaustive]
 pub struct Dep {
-    pub subtree: Option<SubtreeID>,
+    pub subrepo: Option<SubrepoID>,
 }
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
-pub struct SubtreeID {
+pub struct SubrepoID {
     pub pkg_name: String,
     pub pkg: Box<Dep>,
-    pub subtree: String,
+    pub subrepo: String,
     pub nest: Box<Dep>,
 }
