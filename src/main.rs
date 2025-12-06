@@ -302,7 +302,13 @@ struct BuildContext<'a> {
 struct DepMap {
     npm: OnceCell<BTreeMap<String, String>>,
     rnpm: OnceCell<BTreeMap<String, String>>,
-    subroots: OnceCell<BTreeMap<String, (OnceCell<Root>, RwLock<BTreeSet<String>>, DepMap)>>,
+    subroots: OnceCell<BTreeMap<String, SubrootEntry>>,
+}
+#[derive(Default)]
+struct SubrootEntry {
+    root: OnceCell<Root>,
+    members: RwLock<BTreeSet<String>>,
+    depmap: DepMap,
 }
 impl DepMap {
     fn subroot(
@@ -324,7 +330,12 @@ impl DepMap {
                     .collect(),
             )
         })?;
-        let Some((m, r, n)) = m.get(name) else {
+        let Some(SubrootEntry {
+            root: m,
+            members: r,
+            depmap: n,
+        }) = m.get(name)
+        else {
             return Ok(None);
         };
         let m = m.get_or_try_init(|| {
@@ -632,7 +643,10 @@ impl BuildSystem for Cargo {
                     "description".to_owned(),
                     toml::Value::String(ctx.member.description.clone()),
                 );
-                p.insert("publish".to_owned(), toml::Value::Boolean(!ctx.member.private));
+                p.insert(
+                    "publish".to_owned(),
+                    toml::Value::Boolean(!ctx.member.private),
+                );
             }
         }
         match &*ctx.cmd[0] {
@@ -679,7 +693,8 @@ impl BuildSystem for NPM {
                 .and_then(|d| d.as_object_mut())
             {
                 for (k, v) in deps.iter_mut() {
-                    if let Some(dep_name) = ctx.depmap
+                    if let Some(dep_name) = ctx
+                        .depmap
                         .rnpm(ctx.root, ctx.root_path)?
                         .get(k)
                         .and_then(|a| ctx.root.members.get(a))
@@ -701,7 +716,8 @@ impl BuildSystem for NPM {
                         .arg("-p")
                         .arg(format!("{}/tsconfig.json", ctx.root_path))
                         .current_dir(&ctx.path))?;
-                    val = serde_json::from_reader(File::open(format!("{}/package.json", ctx.path))?)?;
+                    val =
+                        serde_json::from_reader(File::open(format!("{}/package.json", ctx.path))?)?;
                 }
                 None => match val.get("source") {
                     Some(_) => {
