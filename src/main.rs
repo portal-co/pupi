@@ -424,6 +424,16 @@ fn update(
                 }
             });
         }
+        if let Some(submodule) = member.submodule.as_ref() {
+            s.spawn(|| {
+                match submodule.process(&path, root_path, xpath, member, root, depmap, cmd, update) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        let _ = error.set(e);
+                    }
+                }
+            });
+        }
     });
     if let Some(e) = error.take() {
         return Err(e);
@@ -522,6 +532,8 @@ pub struct Member {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtree: Option<Subtree>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submodule: Option<Submodule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updater: Option<Vec<String>>,
 }
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
@@ -533,6 +545,11 @@ pub struct NPM {}
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
 #[non_exhaustive]
 pub struct Subtree {
+    pub paths: BTreeMap<String, String>,
+}
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+#[non_exhaustive]
+pub struct Submodule {
     pub paths: BTreeMap<String, String>,
 }
 
@@ -712,6 +729,62 @@ impl BuildSystem for Subtree {
                             .arg("-P")
                             .arg(format!("{root_path}/{xpath}/{p}"))
                             .arg(v))?;
+                        Ok::<_, std::io::Error>(())
+                    })() {
+                        Ok(_) => {}
+                        Err(e) => {
+                            let _ = error.set(e);
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(e) = error.take() {
+            return Err(e);
+        }
+        Ok(())
+    }
+}
+
+impl BuildSystem for Submodule {
+    fn process(
+        &self,
+        _path: &str,
+        root_path: &str,
+        xpath: &str,
+        _member: &Member,
+        _root: &Root,
+        _depmap: &DepMap,
+        _cmd: &[String],
+        _update: bool,
+    ) -> std::io::Result<()> {
+        let mut error = OnceCell::new();
+        std::thread::scope(|s| {
+            for (p, v) in self.paths.iter().map(|(p, v)| (p.clone(), v.clone())) {
+                let error = &error;
+                s.spawn(move || {
+                    match (move || {
+                        let submodule_path = format!("{root_path}/{xpath}/{p}");
+                        // Add submodule if it doesn't exist
+                        if !std::fs::exists(&submodule_path)?
+                            || std::fs::read_dir(&submodule_path)?.next().is_none()
+                        {
+                            out(std::process::Command::new("git")
+                                .arg("submodule")
+                                .arg("add")
+                                .arg("-f")
+                                .arg(&v)
+                                .arg(&p)
+                                .current_dir(&format!("{root_path}/{xpath}")))?;
+                        }
+                        // Update/pull the submodule
+                        out(std::process::Command::new("git")
+                            .arg("submodule")
+                            .arg("update")
+                            .arg("--init")
+                            .arg("--recursive")
+                            .arg("--remote")
+                            .arg(&submodule_path))?;
                         Ok::<_, std::io::Error>(())
                     })() {
                         Ok(_) => {}
