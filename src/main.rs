@@ -5,11 +5,45 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{ErrorKind, Write, stderr, stdout},
+    path::Path,
     process::Command,
     sync::{Mutex, RwLock},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+/// Load a configuration from either JSON or YAML file.
+/// Checks for JSON first, then YAML. This does NOT apply to package.json.
+///
+/// # Panics
+/// Panics if `config_name` is "package" as package.json files should not use YAML.
+pub fn load_config<T: for<'de> Deserialize<'de>>(base_path: &str, config_name: &str) -> std::io::Result<T> {
+    // Enforce that package.json is not affected by YAML support
+    assert!(
+        config_name != "package",
+        "package.json files are not supported by load_config. Use serde_json directly."
+    );
+
+    let json_path = format!("{base_path}/{config_name}.json");
+    let yaml_path = format!("{base_path}/{config_name}.yaml");
+    let yml_path = format!("{base_path}/{config_name}.yml");
+
+    if Path::new(&json_path).exists() {
+        let file = File::open(&json_path)?;
+        serde_json::from_reader(file).map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))
+    } else if Path::new(&yaml_path).exists() {
+        let content = std::fs::read_to_string(&yaml_path)?;
+        serde_yml::from_str(&content).map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))
+    } else if Path::new(&yml_path).exists() {
+        let content = std::fs::read_to_string(&yml_path)?;
+        serde_yml::from_str(&content).map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))
+    } else {
+        Err(std::io::Error::new(
+            ErrorKind::NotFound,
+            format!("Configuration file not found: {config_name}.json, {config_name}.yaml, or {config_name}.yml in {base_path}"),
+        ))
+    }
+}
 fn out(c: &mut Command) -> std::io::Result<()> {
     let o = c.output()?;
     stdout().write_all(&o.stdout)?;
@@ -85,6 +119,15 @@ fn main() -> std::io::Result<()> {
                 .spawn()?
                 .wait()?;
         }
+        "schema" => {
+            // Generate JSON schema for Root configuration
+            let schema = schemars::generate::SchemaSettings::default()
+                .into_generator()
+                .into_root_schema_for::<Root>();
+            let schema_json = serde_json::to_string_pretty(&schema)
+                .map_err(|e| std::io::Error::new(ErrorKind::Other, e))?;
+            println!("{}", schema_json);
+        }
         // "subtree" => {
         //     let root_path = args.next().unwrap();
         //     let args = args.collect::<Vec<_>>();
@@ -115,8 +158,7 @@ fn main() -> std::io::Result<()> {
         _ => {
             let root_path = args.next().unwrap();
             let args = args.collect::<Vec<_>>();
-            let root: Root =
-                serde_json::from_reader(File::open(format!("{root_path}/pupi.json"))?)?;
+            let root: Root = load_config(&root_path, "pupi")?;
             let visited = RwLock::new(BTreeSet::new());
             let mut error = OnceCell::new();
             let d = DepMap::default();
@@ -260,8 +302,8 @@ impl DepMap {
             return Ok(None);
         };
         let m = m.get_or_try_init(|| {
-            let root: Root =
-                serde_json::from_reader(File::open(format!("{root_path}/{name}/pupi.json"))?)?;
+            let subroot_path = format!("{root_path}/{name}");
+            let root: Root = load_config(&subroot_path, "pupi")?;
             Ok::<_, std::io::Error>(root)
         })?;
         return Ok(Some((m, r, format!("{root_path}/{name}"), n)));
