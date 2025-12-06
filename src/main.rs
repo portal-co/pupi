@@ -8,7 +8,6 @@ use std::{
     process::Command,
     sync::{Mutex, RwLock},
 };
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 fn out(c: &mut Command) -> std::io::Result<()> {
@@ -70,7 +69,6 @@ fn main() -> std::io::Result<()> {
                     members=[]
                     resolver="3"
                     [workspace.package]
-
                     [workspace.dependencies]
                     "#,
                 )?;
@@ -97,7 +95,6 @@ fn main() -> std::io::Result<()> {
         //     let roots: Mutex<BTreeMap<String, Root>> = Mutex::new(BTreeMap::new());
         //     std::thread::scope(|s| {
         //         for (path, member) in root.members.iter() {
-
         //             // });
         //         }
         //     });
@@ -448,7 +445,6 @@ fn update(
             _ => {}
         }
     }
-
     std::thread::scope(|s| {
         if let Some(cargo) = member.cargo.as_ref() {
             s.spawn(|| {
@@ -487,7 +483,6 @@ fn update(
                         "build" => {}
                         _ => {}
                     }
-
                     std::fs::write(
                         format!("{path}/Cargo.toml"),
                         toml::to_string_pretty(&val)
@@ -516,7 +511,6 @@ fn update(
                                 o.insert(a.to_owned(), serde_json::Value::String(b.clone()));
                             }
                         }
-
                         if let Some(deps) = val
                             .as_object_mut()
                             .and_then(|o| o.get_mut("dependencies"))
@@ -536,7 +530,6 @@ fn update(
                             }
                         }
                     }
-
                     match &*cmd[0] {
                         "build" | "publish" => match val.get("zshy") {
                             Some(_) => {
@@ -597,7 +590,6 @@ fn update(
     }
     Ok(())
 }
-
 #[derive(Serialize, Deserialize, JsonSchema, Default)]
 pub struct Root {
     #[serde(rename = "//", default, skip_serializing_if = "Option::is_none")]
