@@ -322,9 +322,14 @@ impl DepMap {
                 root.members
                     .iter()
                     .flat_map(|(a, b)| {
-                        b.subtree.iter().flat_map(move |a2| {
-                            a2.paths.iter().map(move |(p, _)| format!("{a}/{p}"))
-                        })
+                        b.subtree
+                            .iter()
+                            .flat_map(move |a2| {
+                                a2.paths.iter().map(move |(p, _)| format!("{a}/{p}"))
+                            })
+                            .chain(b.submodule.iter().flat_map(move |a2| {
+                                a2.paths.iter().map(move |(p, _)| format!("{a}/{p}"))
+                            }))
                     })
                     .map(|a| (a, Default::default()))
                     .collect(),
