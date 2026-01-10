@@ -172,3 +172,12 @@ my-app:
 ## License
 
 MPL-2.0
+
+## Goals
+- [ ] Add project goals
+
+## Progress
+- [ ] Initial setup
+
+---
+*AI assisted*
